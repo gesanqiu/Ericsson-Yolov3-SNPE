@@ -15,7 +15,7 @@ private:
     mutex m_mutex;//全局互斥锁
     condition_variable_any m_notEmpty;//全局条件变量（不为空）
     condition_variable_any m_notFull;//全局条件变量（不为满）
-    int m_maxSize;//队列最大容量
+    unsigned int m_maxSize;//队列最大容量
 
 private:
     //队列为空
@@ -28,14 +28,26 @@ private:
     }
 
 public:
-    TsProAndCon(int maxSize) {
+    TsProAndCon(unsigned int maxSize) {
         this->m_maxSize = maxSize;
     }
     TsProAndCon(){
-        this->m_maxSize = 10000;
+        this->m_maxSize = 25;
     }
 
     int queuecount() const {
+        return m_queue.size();
+    }
+
+    void setMaxSize(unsigned int maxSize) {
+        this->m_maxSize = maxSize;
+    }
+
+    unsigned int getMaxSize() {
+        return this->m_maxSize;
+    }
+
+    unsigned int getCurrentSize() {
         return m_queue.size();
     }
 

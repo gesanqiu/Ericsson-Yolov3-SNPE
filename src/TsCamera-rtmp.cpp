@@ -10,7 +10,8 @@
 #include <time.h>
 #include <pthread.h>
 #include <sched.h>
-#include <opencv2/imgcodecs/imgcodecs_c.h>
+#include <stdio.h>
+#include <opencv2/imgcodecs/legacy/constants_c.h>
 #include "YoloClassification.h"
 
 
@@ -21,36 +22,35 @@
 
 #define GST_RTSPSRC_PATH   "GST_RTSPSRC_PATH"
 
-std::string s_str_object_set[OBJECT_DETECT_MAX] = {"object1",
-    "object2"};
+enum queueCtrl{
+    CACHE_1 = 1,
+    CACHE_2,
+    CACHE_3,
+    CACHE_4,
+    CACHE_5,
+    CACHE_6,
+};
 
 static float same_threshold = 0.7;
 std::string* labels = NULL;
-YoloClassification* detector = NULL;
-
+YoloClassification* DSP_Detector_1 = NULL;
+YoloClassification* DSP_Detector_2 = NULL;
+YoloClassification* DSP_Detector_3 = NULL;
+YoloClassification* DSP_Detector_4 = NULL;
+YoloClassification* DSP_Detector_5 = NULL;
+YoloClassification* DSP_Detector_6 = NULL;
 
 GstElement* TsMulitGstCamPlayer::g_pPipeline = NULL;
 GstElement* TsMulitGstCamPlayer::g_pOutPipeline = NULL;
 
 TsProAndCon<cv::Mat> rgb_frame_cache;
 std::vector<TsCamera*> _listTsCam;
+enum queueCtrl appsinkQueueCtrl = CACHE_1;
+enum queueCtrl appsrcQueueCtrl = CACHE_1;
 
 TsCamera* TsMulitGstCamPlayer::buildCamById ( int nId, std::string strName, int nWidth,
                                               int nHeight, std::string strDecodeType, std::string strUri, int nFramerate )
 {
-    /*TsCamera* pCam = new TsCamera();
-    pCam->SetName ( strName );
-    pCam->SetWidth ( nWidth );
-    pCam->SetHeight ( nHeight );
-    pCam->SetDecodeType ( strDecodeType );
-    pCam->SetCameraID ( nId );
-    pCam->SetFramerate ( nFramerate );
-    pCam->SetUri ( strUri );
-    pCam->SetAiWay("facedect");
-    pCam->BuildPipeLine ( true, true );
-    pCam->SetEnable ( true );
-    pCam->Init (  );
-    return pCam;*/
     return NULL;
 }
 
@@ -78,8 +78,6 @@ void TsCamera::Init ( )
         printf ( "[Camera %s]not enable or init str pipeline\n", GetName().c_str() );
         goto exit;
     }
-    show_frame_cache.debug_info = "show_frame_cache";
-    frame_cache.debug_info = "frame_cache";
 
     /* create a new pipeline */
     m_pPipeline = gst_parse_launch ( m_strline.c_str(), &error );
@@ -125,7 +123,6 @@ void TsCamera::Init ( )
         goto exit;
     }
 
-    printf ( "[Camera------------------1------------------------]\n");
     /* get sink */
     m_pAppSrcSink = gst_bin_get_by_name ( GST_BIN ( m_pOutPipeline ), GetAppSrcName().c_str() );
 
@@ -137,10 +134,10 @@ void TsCamera::Init ( )
     /* appsrc sink */
     g_signal_connect (m_pAppSrcSink, "need-data", G_CALLBACK (cbNeedData), reinterpret_cast<void*> ( this ));
 
-    printf ( "[Camera------------------22------------------------]\n");
+
     /* Run the pipeline */
     printf ( "[Camera %s]Display: %s\n", GetName().c_str(), GetUri().c_str() );
-    printf ( "[Camera------------------23------------------------]\n");
+
     gst_element_set_state ( m_pOutPipeline, GST_STATE_PLAYING );
 #endif
     return;
@@ -231,24 +228,103 @@ GstFlowReturn TsCamera::onBuffer ( GstAppSink* appsink, void* user_data )
     TsCamera* dec = NULL;
     GstSample* sample = NULL;
     dec = reinterpret_cast<TsCamera*> ( user_data );
+    const GstStructure* info = NULL;
+    GstBuffer* buffer = NULL;
+    GstMapInfo map;
+    GstCaps* caps = NULL;
+    int sample_width = 0;
+    int sample_height = 0;
+
     if ( dec == NULL || appsink == NULL )
     {
         printf ( "[Camera %s]decode or appsink is null\n", dec->GetName().c_str() );
-        return GST_FLOW_OK;
+        goto ONBUFFER_ERR;
     }
 
-    //sample = gst_app_sink_pull_sample(appsink);
     sample = gst_base_sink_get_last_sample ( GST_BASE_SINK ( appsink ) );
-    //printf ("[Camera %s]pull sample clock time is : %ld\n", dec->GetName().c_str(), gst_base_sink_get_latency(GST_BASE_SINK(appsink)));
+
     if ( sample == NULL )
     {
         printf ( "[Camera %s]pull sample is null\n", dec->GetName().c_str() );
     }
     else
     {
-        dec->frame_cache.product(std::shared_ptr<GstSample> ( sample, deleterGstSample ));
+        buffer = gst_sample_get_buffer ( sample );
+        if ( buffer == NULL ) {
+            printf ( "[Camera %s]get buffer is null\n", dec->GetName().c_str() );
+            goto ONBUFFER_ERR;
+        }
+
+        gst_buffer_map ( buffer, &map, GST_MAP_READ );
+
+        caps = gst_sample_get_caps ( sample );
+        if ( caps == NULL ) {
+            printf ( "[Camera %s]get caps is null\n", dec->GetName().c_str() );
+            goto ONBUFFER_ERR;
+        }
+
+        info = gst_caps_get_structure ( caps, 0 );
+        if ( info == NULL ) {
+            printf ( "[Camera %s]get info is null\n", dec->GetName().c_str() );
+            goto ONBUFFER_ERR;
+        }
+
+        // ---- Read frame and convert to opencv format ---------------
+        // convert gstreamer data to OpenCV Mat, you could actually
+        // resolve height / width from caps...
+        gst_structure_get_int ( info, "width", &sample_width );
+        gst_structure_get_int ( info, "height", &sample_height );
+
+        // appsink product queue produce
+        // switch control push into available queue
+        {
+            cv::Mat tmpmat ( sample_height, sample_width, CV_8UC3, ( unsigned char* )map.data, cv::Mat::AUTO_STEP );
+            tmpmat = tmpmat.clone();
+
+            switch (appsinkQueueCtrl)
+            {
+            case CACHE_1:
+                dec->frame_cache_1.product(std::make_shared<cv::Mat> (tmpmat));
+                printf("[%s in %d]appsink push in queue one, queue size: %d\n", __FUNCTION__, __LINE__, dec->frame_cache_1.getCurrentSize());
+                appsinkQueueCtrl = CACHE_2;
+                break;
+            case CACHE_2:
+                dec->frame_cache_2.product(std::make_shared<cv::Mat> (tmpmat));
+                printf("[%s in %d]appsink push in queue two, queue size: %d\n", __FUNCTION__, __LINE__, dec->frame_cache_2.getCurrentSize());
+                appsinkQueueCtrl = CACHE_3;
+                break;
+            case CACHE_3:
+                dec->frame_cache_3.product(std::make_shared<cv::Mat> (tmpmat));
+                printf("[%s in %d]appsink push in queue three, queue size: %d\n", __FUNCTION__, __LINE__, dec->frame_cache_3.getCurrentSize());
+                appsinkQueueCtrl = CACHE_4;
+                break;
+            case CACHE_4:
+                dec->frame_cache_4.product(std::make_shared<cv::Mat> (tmpmat));
+                printf("[%s in %d]appsink push in queue four, queue size: %d\n", __FUNCTION__, __LINE__, dec->frame_cache_4.getCurrentSize());
+                appsinkQueueCtrl = CACHE_5;
+            case CACHE_5:
+                dec->frame_cache_5.product(std::make_shared<cv::Mat> (tmpmat));
+                printf("[%s in %d]appsink push in queue five, queue size: %d\n", __FUNCTION__, __LINE__, dec->frame_cache_5.getCurrentSize());
+                appsinkQueueCtrl = CACHE_6;
+                break;
+            case CACHE_6:
+                dec->frame_cache_6.product(std::make_shared<cv::Mat> (tmpmat));
+                printf("[%s in %d]appsink push in queue six, queue size: %d\n", __FUNCTION__, __LINE__, dec->frame_cache_6.getCurrentSize());
+                appsinkQueueCtrl = CACHE_1;
+                break;
+            default:
+                break;
+            } 
+        }
     }
 
+ONBUFFER_ERR:
+    if (buffer) {
+        gst_buffer_unmap ( buffer, &map );
+    }
+    if (sample) {
+        gst_sample_unref (sample);
+    }
     return GST_FLOW_OK;
 }
 
@@ -266,9 +342,12 @@ void TsCamera::BuildPipeLine ( bool rtsp, bool isHwDec )
 
     cameraOutPath << "appsrc name=" << GetAppSrcName() << " stream-type=0 format=3 is-live=true ";
     cameraOutPath << " caps=video/x-raw,format=BGR,width=" << width << ",height=" << height << " ! ";
-    //cameraOutPath << "videoconvert ! video/x-raw,width=1920,height=1088,format=NV12 ! queue ! omxh264enc target-bitrate=1000000 quant-p-frames=25 quant-b-frames=0 control-rate=variable ! queue ! h264parse ! flvmux ! fakesink";
-    //cameraOutPath << "videoconvert ! waylandsink name=" << GetWaylandName() << " sync=false x=" << w_show_x << " y=" << w_show_y << " width=" << w_show_width << " height=" << w_show_height;
-    cameraOutPath << "videoconvert ! video/x-raw,width=1920,height=1080,format=NV12 ! queue ! omxh264enc target-bitrate=4000000 interval-intraframes=25 quant-b-frames=0 control-rate=variable ! queue ! h264parse ! queue ! flvmux ! queue ! rtmpsink max-lateness=500000000 sync=false location=rtmp://push-run.la2028.top/apptest/streamtest";
+    
+    // waylandsink pipeline
+    // cameraOutPath << "videoconvert ! waylandsink name=" << GetWaylandName() << " sync=false x=" << w_show_x << " y=" << w_show_y << " width=" << w_show_width << " height=" << w_show_height;
+    
+    // rtmpsink pipeline
+    cameraOutPath << "videoconvert ! video/x-raw,width=1920,height=1080,format=NV12 ! queue ! omxh264enc target-bitrate=4000000 interval-intraframes=25 quant-b-frames=0 control-rate=variable ! queue ! h264parse ! queue ! flvmux ! queue ! rtmpsink max-lateness=500000000 sync=false location=rtmp://52.81.79.48:1935/live/mask/0";
 
     m_strline = cameraPath.str();
     m_stroutline = cameraOutPath.str();
@@ -357,7 +436,7 @@ void TsCamera::CatureConWait ( std::shared_ptr<GstSample>& dst )
         return;
     }
 
-    frame_cache.consumption(dst);
+    // frame_cache.consumption(dst);
 
 }
 
@@ -413,7 +492,46 @@ void TsCamera::cbNeedData (GstElement *appsrc,
     GstFlowReturn ret;
 
     std::shared_ptr<cv::Mat> imgframe;
-    dec->show_frame_cache.consumption(imgframe);
+
+    {
+        // appsrc consumer queue consume
+        // pop frame from appsrcQueueCtrl
+        switch (appsrcQueueCtrl)
+        {
+        case CACHE_1:
+            dec->show_frame_cache_1.consumption(imgframe);
+            printf("[%s in %d]appsrc pop from queue one, queue size: %d\n", __FUNCTION__, __LINE__, dec->show_frame_cache_1.getCurrentSize());
+            appsrcQueueCtrl = CACHE_2;
+            break;
+        case CACHE_2:
+            dec->show_frame_cache_2.consumption(imgframe);
+            printf("[%s in %d]appsrc pop from queue two, queue size: %d\n", __FUNCTION__, __LINE__, dec->show_frame_cache_2.getCurrentSize());
+            appsrcQueueCtrl = CACHE_3;
+            break;
+        case CACHE_3:
+            dec->show_frame_cache_3.consumption(imgframe);
+            printf("[%s in %d]appsrc pop from queue three, queue size: %d\n", __FUNCTION__, __LINE__, dec->show_frame_cache_3.getCurrentSize());
+            appsrcQueueCtrl = CACHE_4;
+            break;
+        case CACHE_4:
+            dec->show_frame_cache_4.consumption(imgframe);
+            printf("[%s in %d]appsrc pop from queue four, queue size: %d\n", __FUNCTION__, __LINE__, dec->show_frame_cache_4.getCurrentSize());
+            appsrcQueueCtrl = CACHE_5;
+            break;
+        case CACHE_5:
+            dec->show_frame_cache_5.consumption(imgframe);
+            printf("[%s in %d]appsrc pop from queue five, queue size: %d\n", __FUNCTION__, __LINE__, dec->show_frame_cache_5.getCurrentSize());
+            appsrcQueueCtrl = CACHE_6;
+            break;
+        case CACHE_6:
+            dec->show_frame_cache_6.consumption(imgframe);
+            printf("[%s in %d]appsrc pop from queue six, queue size: %d\n", __FUNCTION__, __LINE__, dec->show_frame_cache_6.getCurrentSize());
+            appsrcQueueCtrl = CACHE_1;
+        default:
+            break;
+        }
+    }
+
     if ( imgframe == NULL || imgframe.get() == NULL )
     {
         imgframe = std::make_shared<cv::Mat>(AI_RES_HEIGHT, AI_RES_WIDTH, CV_8UC3, cv::Scalar(0, 0, 0));
@@ -422,46 +540,6 @@ void TsCamera::cbNeedData (GstElement *appsrc,
     int len = imgframe->total() * imgframe->elemSize();
     buffer = gst_buffer_new_allocate (NULL, len, NULL);
 
-    {
-        int left = 0;
-        int top = 0;
-
-        std::deque<S_OBJECT_DATA> objectlist =  dec->getObjectInfoList();
-        int size = objectlist.size();
-
-        for (unsigned int i = 0; i < size; i++ )
-        {
-            S_OBJECT_DATA data = objectlist[i];
-
-            if (data.score >= same_threshold)
-            {
-                cv::Scalar color(150, 255, 40);
-                std::string words= " " + s_str_object_set[data.label];
-                std::cout << "["<<  __func__ << __LINE__ << "]"
-                  << " Check Out Object Name:" << words << std::endl;
-                cv::Point frontpos= cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+top - 10 ) );
-                cv::putText(*imgframe, words, frontpos, cv::FONT_HERSHEY_COMPLEX, 0.8, color,2,0.3);
-            }
-
-            // merge face box;
-            //LOGD("fd(%d) x=%d, y=%d , width=%d, height=%d", k, (int)(data.x), (int)(data.y), (int)(data.width), (int)(data.height));
-            cv::rectangle(*imgframe, cv::Rect((int)(data.x+left), (int)(data.y+top), (int)data.width, (int)data.height), cv::Scalar(0, 200, 0), 3);
-            int grapsize = 15;
-            int thickness=2;
-            cv::Scalar scalar ( 0, 200, 0 );
-            cv::line ( *imgframe, cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+top ) ), cv::Point ( ( int ) ( data.x+grapsize+left ), ( int ) ( data.y+top ) ), scalar, thickness );
-            cv::line ( *imgframe, cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+top ) ), cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+grapsize+top ) ), scalar, thickness );
-            cv::line ( *imgframe, cv::Point ( ( int ) ( data.x+left + data.width - grapsize ), ( int ) ( data.y+top ) ), cv::Point ( ( int ) ( data.x+left + data.width ), ( int ) ( data.y+top ) ), scalar, thickness );
-            cv::line ( *imgframe, cv::Point ( ( int ) ( data.x+left + data.width ), ( int ) ( data.y+top ) ), cv::Point ( ( int ) ( data.x+left + data.width ), ( int ) ( data.y+grapsize+top ) ), scalar, thickness );
-
-            cv::line ( *imgframe, cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+data.height-grapsize+top ) ), cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+data.height+top ) ), scalar, thickness );
-            cv::line ( *imgframe, cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+data.height+top ) ), cv::Point ( ( int ) ( data.x+grapsize+left ), ( int ) ( data.y+data.height+top ) ), scalar, thickness );
-            cv::line ( *imgframe, cv::Point ( ( int ) ( data.x+left-grapsize+ data.width ), ( int ) ( data.y+data.height+top ) ), cv::Point ( ( int ) ( data.x+left+ data.width ), ( int ) ( data.y+data.height+top ) ), scalar, thickness );
-            cv::line ( *imgframe, cv::Point ( ( int ) ( data.x+left+ data.width ), ( int ) ( data.y+data.height+top ) ), cv::Point ( ( int ) ( data.x+left+ data.width ), ( int ) ( data.y-grapsize+data.height+top ) ), scalar, thickness );
-        }
-    }
-
-   
     /* this makes the image */
     GstMapInfo map;
     gst_buffer_map(buffer,&map,GST_MAP_WRITE);
@@ -477,7 +555,7 @@ void TsCamera::cbNeedData (GstElement *appsrc,
       /* something wrong, stop pushing */
       printf ( "[Camera %s]Error: push-buffer fail\n", dec->GetName().c_str());
     }
-    //usleep ( 10*1000 );
+    // usleep (20 * 1000);
 }
 
 gboolean TsCamera::MY_BUS_CALLBACK ( GstBus* bus, GstMessage* message, gpointer data )
@@ -513,154 +591,174 @@ gboolean TsCamera::MY_BUS_CALLBACK ( GstBus* bus, GstMessage* message, gpointer 
     return TRUE;
 }
 
-//gst-launch-1.0 rtspsrc location="rtsp://10.0.36.254:554/user=admin&password=&channel=1&stream=0.sdp?" latency=0 ! queue ! rtph264depay ! h264parse ! queue ! vaapih264dec low-latency=true ! vaapipostproc width=1920 height=1080 format=16 ! appsink sync=false
-
 /**
- * [thread_cam_convert convert task NV12/I420 to RGB]
- * @Author   zhaoyl
- * @param    void
- */
-void thread_cam_convert ( void )
+* @brief draw rectangles of detected objects
+* @param shared_ptr<cv::Mat> imgframe
+* @param std::deque<S_OBJECT_DATA> detectedlist
+* @return {void}
+* @Author Ricardo Lu
+*/
+void drawObjectRect(std::shared_ptr<cv::Mat> &img, std::vector<S_OBJECT_DATA> detectedlist)
 {
-    while ( true )
+    int left = 0;
+    int top = 0;
+    std::vector<S_OBJECT_DATA> objectlist =  detectedlist;
+    unsigned int size = objectlist.size();
+
+    for (unsigned int i = 0; i < size; i++ )
     {
-        for (unsigned int k  = 0; k < _listTsCam.size(); k++ )
+        S_OBJECT_DATA data = objectlist[i];
+        if (data.score >= same_threshold)
         {
-            std::shared_ptr<GstSample> sample;
-            std::shared_ptr<cv::Mat> imgframe;
-            GstBuffer* buffer = NULL;
-            GstCaps* caps = NULL;
-            const GstStructure* info = NULL;
-            GstMapInfo map;
-            int sample_width = 0;
-            int sample_height = 0;
-            TsCamera* pCam = _listTsCam.at ( k );
-
-            if ( pCam->GetName().compare ( "unkown" ) != 0 )
-            {
-                pCam->CatureConWait ( sample );
-                if ( sample == NULL|| sample.get() == NULL )
-                {
-                    continue;
-                }
-                buffer = gst_sample_get_buffer ( sample.get() );
-                if ( buffer == NULL )
-                {
-                    printf ( "[Camera %s]get buffer is null\n", pCam->GetName().c_str() );
-                    continue;
-                }
-
-                gst_buffer_map ( buffer, &map, GST_MAP_READ );
-
-                caps = gst_sample_get_caps ( sample.get() );
-                if ( caps == NULL )
-                {
-                    printf ( "[Camera %s]get caps is null\n", pCam->GetName().c_str() );
-                    continue;
-                }
-
-                info = gst_caps_get_structure ( caps, 0 );
-                if ( info == NULL )
-                {
-                    printf ( "[Camera %s]get info is null\n", pCam->GetName().c_str() );
-                    continue;
-                }
-
-                // ---- Read frame and convert to opencv format ---------------
-
-                // convert gstreamer data to OpenCV Mat, you could actually
-                // resolve height / width from caps...
-                gst_structure_get_int ( info, "width", &sample_width );
-                gst_structure_get_int ( info, "height", &sample_height );
-                cv::Mat tmpmat ( sample_height, sample_width, CV_8UC3, ( unsigned char* ) map.data, cv::Mat::AUTO_STEP );
-                tmpmat = tmpmat.clone();
-                pCam->show_frame_cache.product(std::make_shared<cv::Mat>(tmpmat));
-                rgb_frame_cache.product(std::make_shared<cv::Mat>(tmpmat));
-                gst_buffer_unmap ( buffer, &map );
-                // show caps on first frame
-                if ( !pCam->m_bPrintStreamInfo )
-                {
-                    printf ( "[Camera %s]%s\n", pCam->GetName().c_str(), gst_caps_to_string ( caps ) );
-                    pCam->m_bPrintStreamInfo = true;
-                }
-            }
+            cv::Scalar color(150, 255, 40);
+            std::string words= " " + labels[data.label];
+            std::cout << "[" << __FUNCTION__ << " in " << __LINE__ << "]" << "yolov3 detect output: "  <<  words <<std::endl;
+            cv::Point frontpos= cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+top - 10 ) );
+            cv::putText(*img, words, frontpos, cv::FONT_HERSHEY_COMPLEX, 0.8, color,2,0.3);
         }
-
-        //usleep ( 40*1000 );
-
-        // detect ...
+        // merge face box;
+        //LOGD("fd(%d) x=%d, y=%d , width=%d, height=%d", k, (int)(data.x), (int)(data.y), (int)(data.width), (int)(data.height));
+        cv::rectangle(*img, cv::Rect((int)(data.x+left), (int)(data.y+top), (int)data.width, (int)data.height), cv::Scalar(0, 200, 0), 3);
+        int grapsize = 15;
+        int thickness=2;
+        cv::Scalar scalar ( 0, 200, 0 );
+        cv::line ( *img, cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+top ) ), cv::Point ( ( int ) ( data.x+grapsize+left ), ( int ) ( data.y+top ) ), scalar, thickness );
+        cv::line ( *img, cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+top ) ), cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+grapsize+top ) ), scalar, thickness );
+        cv::line ( *img, cv::Point ( ( int ) ( data.x+left + data.width - grapsize ), ( int ) ( data.y+top ) ), cv::Point ( ( int ) ( data.x+left + data.width ), ( int ) ( data.y+top ) ), scalar, thickness );
+        cv::line ( *img, cv::Point ( ( int ) ( data.x+left + data.width ), ( int ) ( data.y+top ) ), cv::Point ( ( int ) ( data.x+left + data.width ), ( int ) ( data.y+grapsize+top ) ), scalar, thickness );
+        cv::line ( *img, cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+data.height-grapsize+top ) ), cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+data.height+top ) ), scalar, thickness );
+        cv::line ( *img, cv::Point ( ( int ) ( data.x+left ), ( int ) ( data.y+data.height+top ) ), cv::Point ( ( int ) ( data.x+grapsize+left ), ( int ) ( data.y+data.height+top ) ), scalar, thickness );
+        cv::line ( *img, cv::Point ( ( int ) ( data.x+left-grapsize+ data.width ), ( int ) ( data.y+data.height+top ) ), cv::Point ( ( int ) ( data.x+left+ data.width ), ( int ) ( data.y+data.height+top ) ), scalar, thickness );
+        cv::line ( *img, cv::Point ( ( int ) ( data.x+left+ data.width ), ( int ) ( data.y+data.height+top ) ), cv::Point ( ( int ) ( data.x+left+ data.width ), ( int ) ( data.y-grapsize+data.height+top ) ), scalar, thickness );
     }
 }
-/**
- * [task_cpu_convert set thread cpu 0]
- * @Author   zhaoyl
- * @param    void
- */
-void* task_cpu_convert ( void* argc )
-{
-    int i, cpus = 0;
-    cpu_set_t mask;
-    cpu_set_t get;
 
-    cpus = sysconf ( _SC_NPROCESSORS_CONF );
-    printf ( "this system has %d processor(s)\n", cpus );
-
-    CPU_ZERO ( &mask );
-    CPU_SET ( 0, &mask );
-
-    if ( pthread_setaffinity_np ( pthread_self(), sizeof ( mask ), &mask ) < 0 )
-    {
-        fprintf ( stderr, "set thread affinity failed\n" );
-    }
-
-    CPU_ZERO ( &get );
-    if ( pthread_getaffinity_np ( pthread_self(), sizeof ( get ), &get ) < 0 )
-    {
-        fprintf ( stderr, "get thread affinity failed\n" );
-    }
-
-    for ( i = 0; i < cpus; i++ )
-    {
-        if ( CPU_ISSET ( i, &get ) )
-        {
-            printf ( "this thread %d is running in processor %d\n", ( int ) pthread_self(), i );
-        }
-    }
-
-    thread_cam_convert();
-    pthread_exit ( NULL );
-}
-
-void thread_cam_object(void)
+void thread_do_detect_1(void)
 {
     while(true)
     {
-        std::shared_ptr<cv::Mat> imgframe;
-        rgb_frame_cache.consumption(imgframe);
-        std::vector<S_OBJECT_DATA> vec_object_rect;
-        //TODO AI SDK detect
-	
-	vec_object_rect = yolov3_detection(imgframe, detector);
-
-        std::cout << "["<< __FILE__ << __func__ << __LINE__ << "]" << vec_object_rect.size() << std::endl;
-
-        for (unsigned int k  = 0; k < _listTsCam.size(); k++ )
+        TsCamera* pCam = _listTsCam.at ( 0 );
+        if ( pCam->GetName().compare ( "unkown" ) == 0 )
         {
-            TsCamera* pCam = _listTsCam.at ( k );
-            if ( pCam->GetName().compare ( "unkown" ) == 0 )
-            {
-                continue;
-            }
-            pCam->clearObjectList();
-            for (unsigned int i = 0; i < vec_object_rect.size(); i++ )
-            {
-                pCam->addObjectInfo ( vec_object_rect[i] );
-            }
+            continue;
         }
-        //usleep(50*1000);
+
+        std::shared_ptr<cv::Mat> imgframe;
+        std::vector<S_OBJECT_DATA> vec_object_rect;
+
+        pCam->frame_cache_1.consumption(imgframe);
+	    vec_object_rect = yolov3_detection(imgframe, DSP_Detector_1);
+        std::cout << "[" << __FUNCTION__ << " in " << __LINE__ << "]" << "yolov3 detect output size: "  <<  vec_object_rect.size() <<std::endl;
+
+        drawObjectRect(imgframe, vec_object_rect);
+        pCam->show_frame_cache_1.product(imgframe);
     }
 }
 
+void thread_do_detect_2(void)
+{
+    while (true) {
+        TsCamera* pCam = _listTsCam.at ( 0 );
+        if ( pCam->GetName().compare ( "unkown" ) == 0 )
+        {
+            continue;
+        }
+
+        std::shared_ptr<cv::Mat> imgframe;
+        std::vector<S_OBJECT_DATA> vec_object_rect;
+
+        pCam->frame_cache_2.consumption(imgframe);
+	    vec_object_rect = yolov3_detection(imgframe, DSP_Detector_2);
+        std::cout << "[" << __FUNCTION__ << " in " << __LINE__ << "]" << "yolov3 detect output size: "  <<  vec_object_rect.size() <<std::endl;
+
+        drawObjectRect(imgframe, vec_object_rect);
+        pCam->show_frame_cache_2.product(imgframe);
+    }  
+}
+
+void thread_do_detect_3(void)
+{
+    while (true) {
+        TsCamera* pCam = _listTsCam.at ( 0 );
+        if ( pCam->GetName().compare ( "unkown" ) == 0 )
+        {
+            continue;
+        }
+
+        std::shared_ptr<cv::Mat> imgframe;
+        std::vector<S_OBJECT_DATA> vec_object_rect;
+
+        pCam->frame_cache_3.consumption(imgframe);
+	    vec_object_rect = yolov3_detection(imgframe, DSP_Detector_3);
+        std::cout << "[" << __FUNCTION__ << " in " << __LINE__ << "]" << "yolov3 detect output size: "  <<  vec_object_rect.size() <<std::endl;
+
+        drawObjectRect(imgframe, vec_object_rect);
+        pCam->show_frame_cache_3.product(imgframe);
+    }  
+}
+
+void thread_do_detect_4(void)
+{
+    while (true) {
+        TsCamera* pCam = _listTsCam.at ( 0 );
+        if ( pCam->GetName().compare ( "unkown" ) == 0 )
+        {
+            continue;
+        }
+
+        std::shared_ptr<cv::Mat> imgframe;
+        std::vector<S_OBJECT_DATA> vec_object_rect;
+
+        pCam->frame_cache_4.consumption(imgframe);
+	    vec_object_rect = yolov3_detection(imgframe, DSP_Detector_4);
+        std::cout << "[" << __FUNCTION__ << " in " << __LINE__ << "]" << "yolov3 detect output size: "  <<  vec_object_rect.size() <<std::endl;
+
+        drawObjectRect(imgframe, vec_object_rect);
+        pCam->show_frame_cache_4.product(imgframe);
+    }  
+}
+
+void thread_do_detect_5(void)
+{
+    while (true) {
+        TsCamera* pCam = _listTsCam.at ( 0 );
+        if ( pCam->GetName().compare ( "unkown" ) == 0 )
+        {
+            continue;
+        }
+
+        std::shared_ptr<cv::Mat> imgframe;
+        std::vector<S_OBJECT_DATA> vec_object_rect;
+
+        pCam->frame_cache_5.consumption(imgframe);
+	    vec_object_rect = yolov3_detection(imgframe, DSP_Detector_5);
+        std::cout << "[" << __FUNCTION__ << " in " << __LINE__ << "]" << "yolov3 detect output size: "  <<  vec_object_rect.size() <<std::endl;
+
+        drawObjectRect(imgframe, vec_object_rect);
+        pCam->show_frame_cache_5.product(imgframe);
+    }  
+}
+
+void thread_do_detect_6(void)
+{
+    while (true) {
+        TsCamera* pCam = _listTsCam.at ( 0 );
+        if ( pCam->GetName().compare ( "unkown" ) == 0 )
+        {
+            continue;
+        }
+
+        std::shared_ptr<cv::Mat> imgframe;
+        std::vector<S_OBJECT_DATA> vec_object_rect;
+
+        pCam->frame_cache_6.consumption(imgframe);
+	    vec_object_rect = yolov3_detection(imgframe, DSP_Detector_6);
+        std::cout << "[" << __FUNCTION__ << " in " << __LINE__ << "]" << "yolov3 detect output size: "  <<  vec_object_rect.size() <<std::endl;
+
+        drawObjectRect(imgframe, vec_object_rect);
+        pCam->show_frame_cache_6.product(imgframe);
+    }  
+}
 
 /**
  * [start_task start task init process]
@@ -671,13 +769,15 @@ void start_task ( void )
 {
     TsMulitGstCamPlayer::GstEnvInit();
 
-
-    rgb_frame_cache.debug_info = "rgb_frame_cache";
-
-    char* sourcepath = getenv(GST_RTSPSRC_PATH);
+    char* sourcepath;
+    if (!(sourcepath = getenv(GST_RTSPSRC_PATH))) {
+        printf("[%s in %d] error getenv, exit program.\n", __FUNCTION__, __LINE__);
+        return ;
+    }
     printf("GST_RTSPSRC_PATH= %s\n", sourcepath);
 
     TsCamera* pCam = new TsCamera();
+
     pCam->SetName ( "CameraOne" );
     pCam->w_show_x = 0;
     pCam->w_show_y = 0;
@@ -695,11 +795,12 @@ void start_task ( void )
     pCam->Init ( );
     _listTsCam.push_back(pCam);
 
-    std::thread yuvconvertThread(thread_cam_convert);
-    //pthread_t tid_convert;
-    //pthread_create ( &tid_convert, NULL, task_cpu_convert, NULL );
-
-    std::thread objectThread(thread_cam_object);
+    std::thread objectThread_1(thread_do_detect_1);
+    std::thread objectThread_2(thread_do_detect_2);
+    std::thread objectThread_3(thread_do_detect_3);
+    std::thread objectThread_4(thread_do_detect_4);
+    std::thread objectThread_5(thread_do_detect_5);
+    std::thread objectThread_6(thread_do_detect_6);
 
     while ( true )
     {
@@ -710,7 +811,7 @@ void start_task ( void )
 
 }
 
-void snpe_device_init(YoloClassification* detector)
+void snpe_entities_init()
 {  
     labels =  new std::string[1000];
     std::ifstream in("../models/labels.txt");
@@ -721,19 +822,32 @@ void snpe_device_init(YoloClassification* detector)
         count++;
     }
 
-    detector->init(DSP);
-    detector->setConfidence(0.7f);
+    DSP_Detector_1 = new YoloClassification();
+    DSP_Detector_2 = new YoloClassification();
+    DSP_Detector_3 = new YoloClassification();
+    DSP_Detector_4 = new YoloClassification();
+    DSP_Detector_5 = new YoloClassification();
+    DSP_Detector_6 = new YoloClassification();
+
+    DSP_Detector_1->init(DSP);
+    DSP_Detector_1->setConfidence(0.7f);
+    DSP_Detector_2->init(DSP);
+    DSP_Detector_2->setConfidence(0.7f);
+    DSP_Detector_3->init(DSP);
+    DSP_Detector_3->setConfidence(0.7f);
+    DSP_Detector_4->init(DSP);
+    DSP_Detector_4->setConfidence(0.7f);
+    DSP_Detector_5->init(DSP);
+    DSP_Detector_5->setConfidence(0.7f);
+    DSP_Detector_6->init(DSP);
 }
+
 int main ( int argc, char* argv[] )
 {
     printf("\n[cmd:]  app \n ");
-    
-    detector = new YoloClassification();
-    snpe_device_init(detector);
+
+    snpe_entities_init();
     start_task();
 
     return 0;
 }
-
-
-

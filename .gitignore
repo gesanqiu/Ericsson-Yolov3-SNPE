@@ -15,6 +15,7 @@
 *.so
 *.dylib
 *.dll
+libs/*
 
 # Fortran module files
 *.mod
@@ -31,5 +32,17 @@
 *.out
 *.app
 
-# Model file
+# include files
+inc/snpe/*
+
+# Model files
 models/*
+
+# build files
+build/*
+
+# privacy files
+# YoloClassification.h
+# YoloClassification.cpp
+# TS_YoloClassification.h
+# TS_YoloClassification.cpp

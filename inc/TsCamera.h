@@ -24,16 +24,6 @@ using namespace cv;
 
 class TsCamera;
 
-//typedef struct S_OBJECT_DATA {
-//    int x;
-//    int y;
-//    int width;
-//    int height;
-//    int label;
-//   float score;
-//}TsObjectData ;
-
-
 /*-------------------------------------------------------------------------
     global class gstreamer pipline
 -------------------------------------------------------------------------*/
@@ -216,7 +206,18 @@ class TsCamera
 
     bool m_bPrintStreamInfo;
 
-    TsProAndCon<cv::Mat> show_frame_cache;
+    TsProAndCon<cv::Mat> frame_cache_1;
+    TsProAndCon<cv::Mat> frame_cache_2;
+    TsProAndCon<cv::Mat> frame_cache_3;
+    TsProAndCon<cv::Mat> frame_cache_4;
+    TsProAndCon<cv::Mat> frame_cache_5;
+    TsProAndCon<cv::Mat> frame_cache_6;
+    TsProAndCon<cv::Mat> show_frame_cache_1;
+    TsProAndCon<cv::Mat> show_frame_cache_2;
+    TsProAndCon<cv::Mat> show_frame_cache_3;
+    TsProAndCon<cv::Mat> show_frame_cache_4;
+    TsProAndCon<cv::Mat> show_frame_cache_5;
+    TsProAndCon<cv::Mat> show_frame_cache_6;
 
     static cv::Mat unkownCamMat;
 
@@ -287,10 +288,6 @@ class TsCamera
     int m_nId;
     int m_nFramerate;
     bool m_bHwDec;
-
-    // TODO: use synchronized deque
-    TsProAndCon<GstSample> frame_cache;
-
 
     std::mutex m_ObjectListMut;
     std::deque<S_OBJECT_DATA> m_ObjectInfoQueue;

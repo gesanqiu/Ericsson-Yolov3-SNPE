@@ -1,18 +1,17 @@
 cmake_minimum_required(VERSION 3.4.1)
 set(CMAKE_VERBOSE_MAKEFILE on)
+
 PROJECT(AiObject-Yolov3)
 
 
 set(SNPE_INC ${PROJECT_SOURCE_DIR}/inc/snpe/include/zdl)
 set(SOURCE ${PROJECT_SOURCE_DIR}/src)
+set(PROJECT_ROOT "/home/tc-eb5/EdgeAPP")
+set(OpenCV_DIR "${PROJECT_ROOT}/thirdparty/opencv-4.2.0/lib/cmake/opencv4")
 
-set(PROJECT_ROOT "/home/tc-eb5/local/AiObject-Yolov3")
-
-#set(OpenCV_DIR "${PROJECT_ROOT}/thirdparty/opencv-4.0.0/share/OpenCV")
-
-message(STATUS "    current path: ${PROJECT_ROOT}")
-message(STATUS "    current path: ${CMAKE_CURRENT_SOURCE_DIR}")
-
+message(STATUS "    project source path: ${SOURCE}")
+message(STATUS "    project current path: ${PROJECT_ROOT}")
+message(STATUS "    cmake current path: ${CMAKE_CURRENT_SOURCE_DIR}")
 
 find_package(OpenCV REQUIRED)
 message(STATUS "OpenCV library status:")
@@ -40,55 +39,48 @@ set(GSTREAMER_LIBS ${GSTREAMER_LIBS} "gobject-2.0;")
 set(GSTREAMER_LIBS ${GSTREAMER_LIBS} "glib-2.0;")
 set(GSTREAMER_LIBRARY_DIRS  "/usr/lib/aarch64-linux-gnu;")
 
-message(STATUS "    GST DEBUG:###########################")
+message(STATUS "GST DEBUG:###########################")
 message(STATUS "    libraries: ${GSTREAMER_LIBS}")
 message(STATUS "    include path: ${GSTREAMER_INCLUDE_DIRS}")
 message(STATUS "    library path: ${GSTREAMER_LIBRARY_DIRS}")
 
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/
-                   ${OpenCV_INCLUDE_DIRS}/
-                   ${GSTREAMER_INCLUDE_DIRS}/
-                   ${GSTREAMER_APP_INCLUDE_DIRS}/
-                   ${GSTREAMER_RTSP_INCLUDE_DIRS}/
-    		
-		   ${PROJECT_SOURCE_DIR}/inc 
-    		   ${SNPE_INC}
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/
+    ${OpenCV_INCLUDE_DIRS}/
+    ${GSTREAMER_INCLUDE_DIRS}/
+    ${GSTREAMER_APP_INCLUDE_DIRS}/
+    ${GSTREAMER_RTSP_INCLUDE_DIRS}/	
+	${PROJECT_SOURCE_DIR}/inc 
+    ${SNPE_INC}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 
-                   ${CMAKE_CURRENT_SOURCE_DIR}/include )
-
-
-link_directories(${OpenCV_LIBRARY_DIRS}/
-                   ${GSTREAMER_LIBRARY_DIRS}
-		   ${PROJECT_SOURCE_DIR}/libs)
+link_directories(
+    ${OpenCV_LIBRARY_DIRS}/
+    ${GSTREAMER_LIBRARY_DIRS}
+	${PROJECT_SOURCE_DIR}/libs
+)
 
 add_definitions(-DUSE_MODEL_FILE)
 
-
 add_executable(${PROJECT_NAME}
-	${SOURCE}/TsCamera-rtmp.cpp
-	${SOURCE}/yolov3_detection.cpp
-    	${SOURCE}/YoloClassification.cpp
-    	${SOURCE}/time_utility.cpp
+    ${SOURCE}/time_utility.cpp
+    # ${SOURCE}/YoloClassification.cpp
+    # ${SOURCE}/TS_YoloClassification.cpp
+    ${SOURCE}/yolov3_detection.cpp
+    ${SOURCE}/TsCamera-rtmp.cpp
 )
-
-#target_link_libraries(AiObject-Yolov3 ${PARAM_CONF_LIBS} ${OpenCV_LIBS}  ${GSTREAMER_LIBS} )
-
 
 target_link_libraries(${PROJECT_NAME}
     ${PROJECT_SOURCE_DIR}/libs/aarch/libSNPE.so
-    ${PARAM_CONF_LIBS}	
+    # ${PARAM_CONF_LIBS}	
     ${OpenCV_LIBS}
     ${GSTREAMER_LIBS}
-    # yolov3_snpe
     z
-    # ${log-lib}
 )
 
-
-
 set(LIBRARY_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/)
-
 set(CMAKE_CXX_FLAGS "-std=c++0x  -lm -pthread")
 
 
